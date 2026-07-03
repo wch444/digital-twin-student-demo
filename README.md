@@ -43,6 +43,8 @@ Linux 脚本同样会自动寻找 `python3`、`python` 或 `py`，创建 `.venv`
 
 如果要使用真实 DeepSeek API，请在网页左侧栏的 `DeepSeek API Key` 输入框中粘贴自己的 Key。不要把 Key 写进代码文件，也不要把包含 Key 的截图发给别人。
 
+DeepSeek API Key 获取/管理页面：[https://platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys)
+
 ## 下载依赖
 
 启动脚本默认使用阿里 PyPI 镜像源：`https://mirrors.aliyun.com/pypi/simple/`，国内网络下载会更快。如果学校网络无法访问该镜像，可以在启动脚本中把 `PIP_INDEX_URL` 改成其他镜像源。
