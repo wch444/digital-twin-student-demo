@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use the bundled sample data, please cite Twin-2K-500."
+title: "Digital Twin Classroom Demo"
+authors:
+  - name: "wch444"
+date-released: 2026-07-03
+license: MIT
+references:
+  - type: dataset
+    title: "Twin-2K-500: A Dataset for Building Digital Twins of 2,000 People"
+    authors:
+      - family-names: "Toubia"
+        given-names: "Olivier"
+      - family-names: "Gui"
+        given-names: "George Z."
+      - family-names: "Peng"
+        given-names: "Tianyi"
+      - family-names: "Merlau"
+        given-names: "Daniel J."
+      - family-names: "Li"
+        given-names: "Ang"
+      - family-names: "Chen"
+        given-names: "Haozhe"
+    year: 2025
+    url: "https://arxiv.org/abs/2505.17479"
+

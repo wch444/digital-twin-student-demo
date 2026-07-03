@@ -1,0 +1,12 @@
+This classroom demo bundles a 100-person local sample derived from Twin-2K-500.
+
+Twin-2K-500 attribution:
+
+Toubia, Olivier and Gui, George Z. and Peng, Tianyi and Merlau, Daniel J. and
+Li, Ang and Chen, Haozhe. Twin-2K-500: A Dataset for Building Digital Twins of
+2,000 People. 2025. Hugging Face. https://arxiv.org/abs/2505.17479
+
+The Twin-2K-500 dataset is licensed under CC BY 4.0. The application code in
+this repository is licensed under MIT, except for bundled data and derived data
+artifacts, which retain the Twin-2K-500 attribution and license requirements.
+
