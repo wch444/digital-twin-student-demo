@@ -538,31 +538,61 @@ def answer_text(question: dict | None) -> str | None:
 
 
 def candidate_open_answer_items(rows: list[dict], max_items: int = 80) -> list[dict]:
-    common = None
-    examples = {}
+    candidates: dict[str, dict] = {}
+    total_rows = max(1, len(rows))
     for row in rows:
-        gt_ids, rt_ids = set(), set()
-        for source, target in [(row["ground_truth"], gt_ids), (row["retest"], rt_ids)]:
+        row_ids = set()
+        for source in [row["ground_truth"], row["retest"]]:
             for question in iter_answer_questions(source):
                 qid = question.get("QuestionID")
                 q_type = question.get("QuestionType")
                 text = clean_question_text(question.get("QuestionText"))
                 if q_type in {"TE", "Slider"} and qid and text and answer_text(question) is not None:
-                    target.add(qid)
-                    examples.setdefault(qid, question)
-        ids = gt_ids & rt_ids
-        common = ids if common is None else common & ids
-    items = []
-    for qid in sorted(common or set())[:max_items]:
-        question = examples[qid]
-        items.append(
-            {
-                "qid": qid,
-                "text": clean_question_text(question.get("QuestionText")),
-                "question_type": question.get("QuestionType", "TE"),
-            }
-        )
-    return items
+                    item = candidates.setdefault(
+                        qid,
+                        {
+                            "qid": qid,
+                            "text": text,
+                            "question_type": q_type,
+                            "coverage": 0,
+                            "n_rows": total_rows,
+                        },
+                    )
+                    if item.get("question_type") != "TE" and q_type == "TE":
+                        item["question_type"] = "TE"
+                        item["text"] = text
+                    row_ids.add(qid)
+        for qid in row_ids:
+            candidates[qid]["coverage"] += 1
+    text_items = [item for item in candidates.values() if item.get("question_type") == "TE"]
+    fallback_items = [item for item in candidates.values() if item.get("question_type") != "TE"]
+    items = text_items or fallback_items
+    return sorted(
+        items,
+        key=lambda item: (
+            0 if item.get("question_type") == "TE" else 1,
+            -int(item.get("coverage", 0)),
+            str(item.get("qid", "")),
+        ),
+    )[:max_items]
+
+
+def question_item_caption(item: dict, total_rows: int) -> str:
+    q_type = zh_question_types(str(item.get("question_type", "TE")))
+    coverage = int(item.get("coverage", total_rows))
+    n_rows = int(item.get("n_rows", total_rows))
+    return f"{item.get('qid', 'NA')} · {q_type} · 覆盖 {coverage}/{n_rows} 个画像"
+
+
+def selected_question_index(key: str, items: list[dict]) -> int:
+    if key not in st.session_state:
+        st.session_state[key] = 0
+    if not items:
+        st.session_state[key] = 0
+        return 0
+    if st.session_state[key] >= len(items):
+        st.session_state[key] = 0
+    return int(st.session_state[key])
 
 
 def build_user_prompt_for_language(persona_text: str, question_text: str, options: list[str]) -> str:
@@ -1919,38 +1949,34 @@ with tabs[2]:
     choice_items = candidate_eval_items(shown_rows, max_items=80, include_product_items=True)
     choice_items = choice_items or [{"qid": default_qid, "text": default_question, "options": default_options}]
     open_items = candidate_open_answer_items(shown_rows, max_items=80)
-    if "single_choice_idx" not in st.session_state:
-        st.session_state["single_choice_idx"] = 0
-    if "single_open_idx" not in st.session_state:
-        st.session_state["single_open_idx"] = 0
-    if st.session_state["single_choice_idx"] >= len(choice_items):
-        st.session_state["single_choice_idx"] = 0
-    if open_items and st.session_state["single_open_idx"] >= len(open_items):
-        st.session_state["single_open_idx"] = 0
+    selected_question_index("single_choice_idx", choice_items)
+    selected_question_index("single_open_idx", open_items)
 
     mode_col, question_col = st.columns([0.28, 0.72], gap="large")
     with mode_col:
         question_kind = st.radio("题型", ["选择题", "问答题"], horizontal=False)
         question_mode = st.radio("题目来源", ["数据集留出题", "自定义题目"], horizontal=False)
         if question_mode == "数据集留出题":
-            if st.button("随机切换题干", width="stretch"):
-                active_items = open_items if question_kind == "问答题" else choice_items
-                active_key = "single_open_idx" if question_kind == "问答题" else "single_choice_idx"
+            active_items = open_items if question_kind == "问答题" else choice_items
+            active_key = "single_open_idx" if question_kind == "问答题" else "single_choice_idx"
+            selected_question_index(active_key, active_items)
+            if st.button("随机切换题干", width="stretch", disabled=len(active_items) <= 1):
                 if len(active_items) > 1:
                     choices = [i for i in range(len(active_items)) if i != st.session_state[active_key]]
                     st.session_state[active_key] = random.choice(choices)
                 else:
                     st.session_state[active_key] = 0
+            st.caption(f"当前候选题数：{len(active_items)}")
             if question_kind == "问答题":
                 if open_items:
                     selected_item = open_items[st.session_state["single_open_idx"]]
                     qid = selected_item["qid"]
                     options = []
-                    st.caption(f"{qid} · {zh_question_types(selected_item.get('question_type', 'TE'))}")
+                    st.caption(question_item_caption(selected_item, len(shown_rows)))
                 else:
                     qid = "CUSTOM_OPEN"
                     options = []
-                    st.caption("当前画像组合没有共同开放题，已切换为自定义开放题。")
+                    st.caption("当前画像组合没有可用问答题，已切换为自定义开放题。")
             else:
                 selected_item = choice_items[st.session_state["single_choice_idx"]]
                 qid = selected_item["qid"]
