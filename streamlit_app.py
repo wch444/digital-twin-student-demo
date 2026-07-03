@@ -715,6 +715,88 @@ def simulate_single_open_answer(persona_text: str, question_text: str, use_chine
     return "我会根据自己的经历和偏好，给出一个简短、直接的回答。" if use_chinese else "I would give a brief answer based on my own experiences and preferences."
 
 
+def fallback_single_simulation_summary(result_df: pd.DataFrame, question_text: str, question_kind: str, options: list[str]) -> str:
+    if result_df is None or result_df.empty:
+        return "本次没有生成可总结的单题模拟结果。"
+    question_preview = clean_question_text(question_text)[:120]
+    if question_kind == "问答题":
+        answers = result_df.get("twin_answer", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+        empty_count = int(answers.eq("").sum())
+        nonempty = answers[answers.ne("")]
+        samples = "；".join(nonempty.head(3).map(lambda value: value[:80] + ("..." if len(value) > 80 else "")).tolist())
+        if not samples:
+            samples = "暂无有效回答。"
+        return (
+            f"本题共生成 {len(result_df)} 条开放回答，空回复 {empty_count} 条。"
+            f"题目为「{question_preview}」。代表性回答包括：{samples} "
+            "可结合下方个体明细查看不同画像的表达差异；开放题没有自动准确率，只适合做质性预览和课堂讨论。"
+        )
+
+    data = result_df.copy()
+    parsed = pd.to_numeric(data.get("twin"), errors="coerce")
+    parsed_count = int(parsed.notna().sum())
+    unparsed_count = len(data) - parsed_count
+    label_series = data.get("twin_label", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
+    if label_series.eq("").all() and options:
+        label_series = parsed.map(lambda value: options[int(value) - 1] if pd.notna(value) and 1 <= int(value) <= len(options) else "")
+    distribution = label_series[label_series.ne("")].value_counts()
+    top_choice = distribution.index[0] if not distribution.empty else "暂无"
+    top_share = (distribution.iloc[0] / max(1, parsed_count)) if not distribution.empty else 0.0
+    twin_acc = pd.to_numeric(data.get("acc_twin"), errors="coerce")
+    retest_acc = pd.to_numeric(data.get("acc_retest"), errors="coerce")
+    acc_text = f"孪生平均准确率 {twin_acc.mean():.3f}" if twin_acc.notna().any() else "孪生准确率暂无可计算真值"
+    retest_text = f"人类重测平均准确率 {retest_acc.mean():.3f}" if retest_acc.notna().any() else "人类重测准确率暂无可计算真值"
+    return (
+        f"本题共模拟 {len(data)} 个画像，成功解析为选项编号 {parsed_count} 条，未解析 {unparsed_count} 条。"
+        f"题目为「{question_preview}」。数字孪生最常预测「{top_choice}」，占已解析结果的 {top_share:.1%}。"
+        f"{acc_text}，{retest_text}。可用下方表格查看每个画像的预测、真值和原始输出。"
+    )
+
+
+def generate_single_simulation_summary(
+    result_df: pd.DataFrame,
+    question_text: str,
+    question_kind: str,
+    options: list[str],
+    api_key: str,
+    base_url: str,
+    model: str,
+    use_chinese: bool,
+) -> str:
+    fallback = fallback_single_simulation_summary(result_df, question_text, question_kind, options)
+    if not api_key.strip() or result_df is None or result_df.empty:
+        return fallback
+    if question_kind == "问答题":
+        sample = result_df.reindex(columns=["pid", "truth_text", "retest_text", "twin_answer"]).tail(20)
+        result_note = "开放题结果样例"
+    else:
+        sample = result_df.reindex(columns=["pid", "truth", "retest", "twin", "twin_label", "acc_twin", "acc_retest"]).tail(30)
+        result_note = "选择题结果样例"
+    option_text = "\n".join(f"{i + 1}. {option}" for i, option in enumerate(options)) if options else "无固定选项"
+    prompt = (
+        "你是一名讲解数字孪生课堂演示的教师。请根据一次单题模拟结果，写一段简洁中文总结。\n"
+        "要求：1）说明样本量和题目；2）选择题要说明主要选项分布、准确率和是否有解析失败；"
+        "3）开放题要提炼回答共性和差异；4）不要夸大，说明这是模拟预览；5）控制在120字以内。\n\n"
+        f"题型：{question_kind}\n"
+        f"题目：{question_text}\n"
+        f"选项：\n{option_text}\n\n"
+        f"规则总结：{fallback}\n\n"
+        f"{result_note}：\n{sample.to_csv(index=False)}"
+    )
+    try:
+        return call_llm(
+            ZH_SYSTEM_MESSAGE if use_chinese else SYSTEM_MESSAGE,
+            prompt,
+            api_key.strip(),
+            base_url,
+            model,
+            max_tokens=500,
+            thinking=st.session_state.get("thinking_mode", "disabled"),
+        ).strip()
+    except Exception as exc:
+        return f"{fallback}\n\n（自动总结调用失败，已使用规则总结：{safe_error_message(exc)}）"
+
+
 def demand_prompt(persona_text: str, question_text: str, options: list[str], use_chinese: bool) -> str:
     if use_chinese:
         opt_block = "选项：\n" + "\n".join(f"  {i + 1} = {option}" for i, option in enumerate(options)) + "\n"
@@ -1776,7 +1858,12 @@ with st.sidebar:
     text_language = st.radio("文本语言", ["中文", "原文"], horizontal=True, index=0)
     api_key = st.text_input("DeepSeek API Key", type="password", value=default_api_key())
     base_url = st.text_input("Base URL", value="https://api.deepseek.com")
-    model = st.text_input("模型", value="deepseek-v4-flash")
+    model_choice = st.selectbox("模型", ["deepseek-v4-flash", "deepseek-v4-pro", "自定义"], index=0)
+    model = (
+        st.text_input("自定义模型", value="deepseek-v4-flash", key="custom_model_name").strip() or "deepseek-v4-flash"
+        if model_choice == "自定义"
+        else model_choice
+    )
     max_tokens = st.slider("回答 token 上限", min_value=3, max_value=600, value=30, step=1)
     thinking_enabled = st.toggle("DeepSeek thinking 模式", value=False)
     auto_translate_uncached = st.toggle("用 API 补翻未缓存文本", value=False)
@@ -2077,12 +2164,47 @@ with tabs[2]:
             st.session_state["single_result"] = result
             st.session_state["single_options"] = options
             st.session_state["single_result_kind"] = question_kind
+            st.session_state["single_result_question"] = question_text
+            st.session_state["single_result_qid"] = qid
+            with st.spinner("正在生成单题总结..."):
+                st.session_state["single_summary"] = generate_single_simulation_summary(
+                    result,
+                    question_text,
+                    question_kind,
+                    options,
+                    api_key,
+                    base_url,
+                    model,
+                    st.session_state["use_chinese_text"],
+                )
 
     result = st.session_state.get("single_result")
     if result is not None:
         if result.empty:
             st.warning("本次没有生成任何记录，请增加模拟人数或换一个题目。")
-        elif st.session_state.get("single_result_kind") == "问答题":
+        else:
+            result_kind = st.session_state.get("single_result_kind", question_kind)
+            result_question = st.session_state.get("single_result_question", question_text)
+            result_options = st.session_state.get("single_options", [])
+            summary_cols = st.columns([0.78, 0.22])
+            with summary_cols[0]:
+                st.markdown("**单题模拟总结**")
+            with summary_cols[1]:
+                refresh_summary = st.button("重新生成总结", width="stretch", key="refresh_single_summary")
+            if refresh_summary:
+                st.session_state["single_summary"] = generate_single_simulation_summary(
+                    result,
+                    result_question,
+                    result_kind,
+                    result_options,
+                    api_key,
+                    base_url,
+                    model,
+                    st.session_state["use_chinese_text"],
+                )
+            st.info(st.session_state.get("single_summary") or fallback_single_simulation_summary(result, result_question, result_kind, result_options))
+
+        if not result.empty and st.session_state.get("single_result_kind") == "问答题":
             answer_series = result.get("twin_answer", pd.Series(dtype=str)).fillna("").astype(str).str.strip()
             empty_count = int(answer_series.eq("").sum())
             c1, c2 = st.columns(2)
@@ -2095,7 +2217,7 @@ with tabs[2]:
                 st.markdown(f"**被试 {row.get('pid', 'NA')}**")
                 st.write(visible_model_output(row.get("twin_answer")))
             st.dataframe(zh_table_columns(result), width="stretch", hide_index=True)
-        else:
+        elif not result.empty:
             c1, c2 = st.columns(2)
             c1.metric("孪生平均准确率", f"{result['acc_twin'].mean():.3f}" if result["acc_twin"].notna().any() else "NA")
             c2.metric("人类重测平均准确率", f"{result['acc_retest'].mean():.3f}" if result["acc_retest"].notna().any() else "NA")
